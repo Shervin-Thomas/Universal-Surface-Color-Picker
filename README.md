@@ -2,7 +2,9 @@
 
 `UniversalSurfaceColorPicker.cs` is an **Editor-only** SceneView tool that turns a “picker cube” into a live surface color sampler.
 
-When a GameObject whose name contains **`ColorPickerCube`** is selected, the tool shoots short raycasts (6 directions) from the cube’s collider bounds center. On the first nearby hit, it samples the hit material’s base texture at the hit UV and applies that color to the cube’s material.
+It has no window/menu item: it hooks `SceneView.duringSceneGui` via `[InitializeOnLoad]` and runs automatically while the editor is open.
+
+When a GameObject whose name contains **`ColorPickerCube`** is selected, the tool shoots short raycasts (6 directions) from the cube’s collider bounds center. On the first nearby hit, it samples the hit material and applies the resulting color to the cube’s material.
 
 ## Files / Locations
 
@@ -39,8 +41,9 @@ For a surface to be “detected” and sampled, it must satisfy all of these:
 - The sampled material must have a base texture in one of these properties:
   - `_BaseMap` (URP)
   - `_MainTex` (fallback)
-- The base texture must be readable:
+- If you want **true per-pixel sampling**, the base texture must be readable:
   - In the texture import settings, enable **Read/Write**.
+  - If it’s not readable (or there is no texture), the tool falls back to using the material tint color only.
 
 ## How it works (behavior details)
 
@@ -48,7 +51,12 @@ For a surface to be “detected” and sampled, it must satisfy all of these:
 - Raycasts: casts in ±X, ±Y, ±Z from the cube collider’s bounds center.
 - Range: `0.2` units per ray. Keep the cube **within ~0.2 units** of the surface you want to sample.
 - Multi-material meshes: supported; the tool uses `RaycastHit.triangleIndex` + submesh triangles to pick the correct material.
-- Sampling: uses `Texture2D.GetPixel()` at the hit UV.
+- Sampling (when possible): uses `Texture2D.GetPixel()` at the hit UV.
+- Color math: multiplies sampled texture color by the material tint in **linear** space, then converts back to gamma so it looks lighting-independent.
+- Surface handling (URP-correct-ish):
+  - **Cutout**: `_ALPHATEST_ON` → ignores pixels below `_Cutoff`.
+  - **Transparent**: `_SURFACE_TYPE_TRANSPARENT` or `renderQueue >= 3000` → keeps alpha from texture × tint.
+  - **Opaque**: forces output alpha to 1.
 - Applying: writes to the cube renderer’s `sharedMaterial` color (`_BaseColor` or `_Color`).
 
 ## Troubleshooting
@@ -60,10 +68,11 @@ For a surface to be “detected” and sampled, it must satisfy all of these:
 - **It hits the object but never changes color**
   - The hit collider must be a `MeshCollider` with a valid `sharedMesh`.
   - The `MeshCollider` must be on the same object as the `Renderer`.
-  - The sampled material needs `_BaseMap` or `_MainTex` assigned.
+  - If the surface is **cutout**, the ray may be hitting fully transparent pixels; move the cube slightly and try again.
+  - If the material has no `_BaseMap`/`_MainTex`, the tool will use the material tint only.
 
-- **Console shows texture not readable / color doesn’t change**
-  - Enable **Read/Write** on the texture asset used by `_BaseMap`/`_MainTex`.
+- **Color is always “flat” (only tint) instead of matching the texture**
+  - Enable **Read/Write** on the texture asset used by `_BaseMap`/`_MainTex` so per-pixel sampling works.
 
 - **Changing the cube color changes other objects too**
   - Add `ColorPickerCubeMaterial` to the cube so it uses a unique material instance.
@@ -71,4 +80,5 @@ For a surface to be “detected” and sampled, it must satisfy all of these:
 ## Notes / Limitations
 
 - This is Editor tooling (SceneView-driven). It’s intended for authoring / setup workflows.
+- Material/shader support is best for URP/Lit-style properties (`_BaseMap`, `_BaseColor`). Custom shaders may use different property names and won’t be sampled.
 - `MeshCollider` cannot sample `SkinnedMeshRenderer` directly unless you provide a baked mesh collider workflow.
