@@ -1,3 +1,9 @@
+
+
+// ####### Done By Shervin Thomas #######
+
+
+
 using UnityEditor;
 using UnityEngine;
 
@@ -13,6 +19,13 @@ public static class UniversalSurfaceColorPicker
         Vector3.forward,
         Vector3.back
     };
+
+    enum SurfaceType
+    {
+        Opaque,
+        Transparent,
+        Cutout
+    }
 
     static UniversalSurfaceColorPicker()
     {
@@ -45,23 +58,78 @@ public static class UniversalSurfaceColorPicker
             if (targetRenderer == null)
                 continue;
 
-            Material mat = ResolveMaterial(hit, targetRenderer);
-            if (mat == null)
+            Material sourceMat = ResolveMaterial(hit, targetRenderer);
+            if (sourceMat == null)
                 continue;
 
-            Texture2D tex = GetBaseMapTexture(mat);
-            if (tex == null || !tex.isReadable)
-                continue;
+            SurfaceType surfaceType = GetSurfaceType(sourceMat);
+            float cutoff = GetAlphaCutoff(sourceMat);
 
-            Color picked = SampleTexture(tex, hit.textureCoord);
+            Color tint = GetMaterialTint(sourceMat);
+            Color picked;
+
+            Texture2D baseMap = GetBaseMapTexture(sourceMat);
+
+            // ---------- COLOR PICKING ----------
+            if (baseMap != null && baseMap.isReadable)
+            {
+                Color texColor = SampleTexture(baseMap, hit.textureCoord);
+
+                // Cutout: ignore invisible pixels
+                if (surfaceType == SurfaceType.Cutout && texColor.a < cutoff)
+                    continue;
+
+                // Linear-space multiply (lighting-independent)
+                Color rgb = texColor.linear * tint.linear;
+
+                float alpha = surfaceType == SurfaceType.Opaque
+                    ? 1f
+                    : texColor.a * tint.a;
+
+                picked = rgb.gamma;
+                picked.a = alpha;
+            }
+            else
+            {
+                // Material-only color (no texture)
+                picked = tint;
+                if (surfaceType == SurfaceType.Opaque)
+                    picked.a = 1f;
+            }
+
             ApplyColor(cubeRenderer, picked);
-
             SceneView.RepaintAll();
             break;
         }
     }
 
-    // ---------------- HELPERS ----------------
+    // ---------------- SURFACE TYPE (URP-CORRECT) ----------------
+
+    static SurfaceType GetSurfaceType(Material mat)
+    {
+        // Cutout (Alpha Clipping)
+        if (mat.IsKeywordEnabled("_ALPHATEST_ON"))
+            return SurfaceType.Cutout;
+
+        // Transparent (keyword first, renderQueue fallback)
+        if (mat.IsKeywordEnabled("_SURFACE_TYPE_TRANSPARENT"))
+            return SurfaceType.Transparent;
+
+        if (mat.renderQueue >= 3000)
+            return SurfaceType.Transparent;
+
+        return SurfaceType.Opaque;
+    }
+
+    static float GetAlphaCutoff(Material mat)
+    {
+        if (mat.HasProperty("_Cutoff"))
+            return mat.GetFloat("_Cutoff");
+
+        return 0.5f;
+    }
+
+    // ---------------- MATERIAL RESOLUTION ----------------
 
     static Material ResolveMaterial(RaycastHit hit, Renderer renderer)
     {
@@ -94,6 +162,8 @@ public static class UniversalSurfaceColorPicker
         return 0;
     }
 
+    // ---------------- COLOR SOURCES ----------------
+
     static Texture2D GetBaseMapTexture(Material mat)
     {
         if (mat.HasProperty("_BaseMap"))
@@ -105,12 +175,25 @@ public static class UniversalSurfaceColorPicker
         return null;
     }
 
+    static Color GetMaterialTint(Material mat)
+    {
+        if (mat.HasProperty("_BaseColor"))
+            return mat.GetColor("_BaseColor");
+
+        if (mat.HasProperty("_Color"))
+            return mat.color;
+
+        return Color.white;
+    }
+
     static Color SampleTexture(Texture2D tex, Vector2 uv)
     {
         int x = Mathf.Clamp(Mathf.FloorToInt(uv.x * tex.width), 0, tex.width - 1);
         int y = Mathf.Clamp(Mathf.FloorToInt(uv.y * tex.height), 0, tex.height - 1);
         return tex.GetPixel(x, y);
     }
+
+    // ---------------- APPLY ----------------
 
     static void ApplyColor(Renderer cubeRenderer, Color color)
     {
